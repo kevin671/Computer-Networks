@@ -1,6 +1,1 @@
-# Computer Networks
-
-Basic programming techniques between networked computer systems.
-
-### textbook
-https://book.systemsapproach.org/index.html
+### 授業の課題で作成したネットワークを介した通信プログラム
