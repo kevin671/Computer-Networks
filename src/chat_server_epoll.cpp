@@ -1,115 +1,205 @@
+#include <unistd.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <stdlib.h>
 #include <netinet/in.h>
 #include <string.h>
-#include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <time.h>
+#define PORT 8080
+#define BUF_LEN 1024
+#define MAX_EPOLL 80
 
-#define MAX_LEN 1024
-#define MAX_USERS 100
+size_t serial_msg_num = 0;
 
 struct FdInfo
 {
-    int fd;
-    int user_id;
+   int fd;
+   char *name;
+   struct FdInfo *next;
 };
-int user_count = 0;
-FdInfo *user_list[100];
 
-int build_server(struct sockaddr_in *sin)
+struct FdInfo *add_fd_to_epoll_instance(int epfd, struct FdInfo *fd_current_ptr, int target_fd)
 {
-    memset(&sin, 0, sizeof(sin));
-    sin->sin_family = AF_INET;
-    sin->sin_port = htons(8080);
-    sin->sin_addr.s_addr = INADDR_ANY;
-
-    if ((s = socket(PF_INET, SOCK_STREAM, 0)) < 0)
-    {
-        peeror("socket() failed");
-        exit(1);
-    }
-    if (bind(s, (struct sockaddr *)&sin, sizeof(sin)) < 0)
-    {
-        peeror("bind() failed");
-        exit(1);
-    }
-    listen(s, 5);
-    return s;
+   struct epoll_event event;
+   event.events = EPOLLIN;
+   event.data.ptr = malloc(sizeof(struct FdInfo));
+   if (event.data.ptr == NULL)
+   {
+       exit(EXIT_FAILURE);
+   }
+   ((struct FdInfo *)event.data.ptr)->fd = target_fd;
+   ((struct FdInfo *)event.data.ptr)->next = NULL;
+   ((struct FdInfo *)event.data.ptr)->name = NULL;
+   if (epoll_ctl(epfd, EPOLL_CTL_ADD, target_fd, &event) == -1)
+   {
+       exit(EXIT_FAILURE);
+   }
+   if (fd_current_ptr != NULL)
+   {
+       fd_current_ptr->next = (struct FdInfo *)event.data.ptr;
+   }
+   return (struct FdInfo *)event.data.ptr;
 }
 
-/*+
- * add server fd to epoll instance
- */
-struct FdInfo *add_fd_to_epoll(int epfd, int server_fd)
+void add_name_to_fd_info(struct FdInfo *conn, char *name)
 {
-    struct epoll_event event;
-    memset(&event, 0, sizeof(event));
-    event.events = EPOLIN;
-    ((struct FdInfo *)event.data.fd) = malloc(sizeof(struct FdInfo));
-    ((struct FdInfo *)event.data.ptr->fd) = 0;
-    ((struct FdInfo *)event.data.prt->user_id) = NULL;
-
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &event) < 0)
-    {
-        printf("epoll_ctl() failed\n");
-        return -1;
-    }
-    return event.data.ptr;
+   conn->name = (char *)calloc(1, sizeof(char) * strlen(name));
+   if (conn->name == NULL)
+   {
+       exit(EXIT_FAILURE);
+   }
+   strcpy(conn->name, name);
 }
 
-void write_to_everyone(char *message)
+void edit_msg(char *msg, char *buf, char *name)
 {
-    for (FdInfo *user_info : user_list)
-    {
-        if (write(user_info->fd, message, sizeof(message)) < 0)
-        {
-            perror("write() failed");
-            exit(1);
-        }
-    }
+   char str_time[32] = {'\0'};
+   time_t t = time(NULL);
+   struct tm *date = localtime(&t);
+   strftime(str_time, sizeof(str_time), "%Y/%m/%d %H:%M:%S", date);
+   sprintf(msg, "[%ld %s %s]\n   %s\n", ++serial_msg_num, name, str_time, buf);
 }
 
-int main(void)
+void write(struct FdInfo *fd_info_head, char *msg)
 {
-    int addr_len, conn_sock;
-    struct sockaddr_in sin;
-    int server_fd = build_server(&sin);
-    printf("build server");
+   if (fd_info_head == NULL)
+   {
+       return;
+   }
+   write(fd_info_head->fd, msg, strlen(msg));
+   write(fd_info_head->next, msg);
+}
 
-    int epfd = epoll_create(1) : if (epfd < 0)
-    {
-        printf("epoll_creat() failed\n");
-        return -1;
-    }
-    struct FdInfo *fd_info = add_fd_to_epoll(*epfd, server_fd);
+struct FdInfo *delete_fd_from_epoll_instance(int epfd, struct FdInfo *fd_info_head, struct FdInfo *conn)
+{
+   close(conn->fd);
+   struct FdInfo *h = fd_info_head;
+   while (h->next != NULL && h->next->fd != conn->fd)
+   {
+       h = h->next;
+   }
+   h->next = h->next->next;
+   epoll_ctl(epfd, EPOLL_CTL_DEL, conn->fd, NULL);
+   free(conn->name);
+   free(conn);
+   while (h->next != NULL)
+   {
+       h = h->next;
+   }
+   return h;
+}
 
-    char buf[MAX_LEN];
-    struct epoll_event events[MAX_EPOLL];
+void trim_nl(char *str)
+{
+   char *p;
+   p = strchr(str, '\n');
+   if (p != NULL)
+   {
+       *p = '\0';
+   }
+   p = strchr(str, '\r');
+   if (p != NULL)
+   {
+       *p = '\0';
+   }
+}
 
-    while (1)
-    {
-        nfds = epoll_wait(epfd, &events, 1, -1);
-        for (i = 0; i < nfds; i++)
-        {
-            if (events[i].data.ptr->fd == server_fd)
-            {
-                if (conn_sock = accept(server_fd, (struct sockaddr *)&sin, &addr_len) < 0)
-                {
-                    perror("accept() failed");
-                    exit(1);
-                }
-                struct FdInfo *fd_info = add_fd_to_epoll(epfd, conn_sock);
-                fd_info->user_id = user_count++;
-            }
-            else
-            {
-                read(events[i].data.ptr->fd, buf, sizeof(buf) <= 0)
-                {
-                    perror("read() failed");
-                    exit(1);
-                }
-                write_to_everyone(buf);
-            }
-        }
-    }
+int build_server(struct sockaddr_in *address)
+{
+   int server_fd, opt = 1;
+   if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+   {
+       exit(EXIT_FAILURE);
+   }
+
+   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                  &opt, sizeof(opt)))
+   {
+       exit(EXIT_FAILURE);
+   }
+   address->sin_family = AF_INET;
+   address->sin_addr.s_addr = INADDR_ANY;
+   address->sin_port = htons(PORT);
+
+   if (bind(server_fd, (struct sockaddr *)address, sizeof(*address)) < 0)
+   {
+       exit(EXIT_FAILURE);
+   }
+
+   if (listen(server_fd, 5) < 0)
+   {
+       exit(EXIT_FAILURE);
+   }
+   return server_fd;
+}
+
+struct FdInfo *init_epoll_event(int *epfd, int server_fd)
+{
+   char server_name[] = "server";
+   *epfd = epoll_create(MAX_EPOLL);
+   struct FdInfo *fd_info_current = add_fd_to_epoll_instance(*epfd, NULL, server_fd);
+   add_name_to_fd_info(fd_info_current, server_name);
+   return fd_info_current;
+}
+
+int main(int argc, char *argv[])
+{
+   int new_socket;
+   struct sockaddr_in address;
+   int addrlen = sizeof(address);
+   int server_fd = build_server(&address);
+   printf("build server\n");
+
+   int epfd, event_readable;
+   struct epoll_event events[MAX_EPOLL];
+   struct FdInfo *fd_info_current = init_epoll_event(&epfd, server_fd);
+   struct FdInfo *fd_info_head = fd_info_current;
+
+   char buf[BUF_LEN] = {0};
+   char msg[BUF_LEN] = {0};
+
+   while (1)
+   {
+       event_readable = epoll_wait(epfd, events, MAX_EPOLL, -1);
+       memset(buf, 0, sizeof(buf));
+       memset(msg, 0, sizeof(msg));
+       for (int i = 0; i < event_readable; i++)
+       {
+           struct FdInfo *conn = (struct FdInfo *)events[i].data.ptr;
+           if (conn->fd == server_fd)
+           {
+               if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) == -1)
+               {
+                   continue;
+               }
+               add_fd_to_epoll_instance(epfd, fd_info_current, new_socket);
+               fd_info_current = fd_info_current->next;
+           }
+           else if (read(conn->fd, buf, sizeof(buf)) <= 0)
+           {
+               if (strlen(conn->name) > 0)
+               {
+                   sprintf(buf, "%sがログアウトしました。\n", conn->name);
+                   edit_msg(msg, buf, fd_info_head->name);
+                   printf("%s\n", msg);
+                   write(fd_info_head->next, msg);
+               }
+               fd_info_current = delete_fd_from_epoll_instance(epfd, fd_info_head, conn);
+           }
+           trim_nl(buf);
+           if (conn->name == NULL)
+           {
+               add_name_to_fd_info(conn, buf);
+               sprintf(buf, "%sがログインしました。\n", conn->name);
+               edit_msg(msg, buf, fd_info_head->name);
+           }
+           else
+           {
+               edit_msg(msg, buf, conn->name);
+           }
+           printf("%s\n", msg);
+           write(fd_info_head->next, msg);
+       }
+   }
 }
